@@ -1,0 +1,17 @@
+httpcore
+pydantic
+anyio>=4.7.0
+googleapis-common-protos>=1.70.0
+h2>=4.2.0
+protobuf>=5.29.1
+starlette>=0.46.0
+types-protobuf>=5.29.1.20241207
+yarl>=1.18.3
+connect-python
+protoc-gen-connect-python>=0.1.0
+grpcio-tools
+grpcio-reflection>=1.56.2
+grpcio-health-checking>=1.56.2
+grpcio>=1.56.2
+annotated-types>=0.7.0
+typeguard

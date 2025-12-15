@@ -15,3 +15,5 @@ grpcio-health-checking>=1.56.2
 grpcio>=1.56.2
 annotated-types>=0.7.0
 typeguard
+orjson
+attrs

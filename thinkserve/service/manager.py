@@ -8,7 +8,7 @@ from functools import partial
 
 from .configs import ServiceConfigs
 from .register import EndpointInfo
-from .communication import MessagePool
+from .comm import MessageQueue
 
 if TYPE_CHECKING:
     from .service import Service
@@ -19,8 +19,8 @@ class RuntimeInfo(BaseModel):
 @dataclass
 class ServiceWorkerProxy:
     
-    input_message_pool: MessagePool = field(default_factory=partial(MessagePool, mode='send'))
-    output_message_pool: MessagePool = field(default_factory=partial(MessagePool, mode='receive'))
+    input_message_pool: MessageQueue = field(default_factory=partial(MessageQueue, mode='send'))
+    output_message_pool: MessageQueue = field(default_factory=partial(MessageQueue, mode='receive'))
 
 
 class ServerManager:

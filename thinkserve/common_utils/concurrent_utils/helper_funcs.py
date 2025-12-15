@@ -15,7 +15,10 @@ from typing import (Callable, TypeVar, Awaitable, TypeGuard, AsyncIterable, over
                     AsyncGenerator, Any, ItemsView, Coroutine, Generator)
 from typing_extensions import ParamSpec, TypeAliasType
 
-from .nested_loop import get_nested_loop_policy
+if __name__ != '__main__':
+    from .nested_loop import get_nested_loop_policy
+else:
+    from nested_loop import get_nested_loop_policy
 
 _R = TypeVar('_R')
 _F = TypeVar('_F', bound=Callable[..., Any])
@@ -252,7 +255,7 @@ async def collect_async_stream_output(async_iterable: AsyncIterable[_R]|AsyncGen
         results.append(result)
     return results
 
-_on_program_exit_listeners: list[tuple[Callable, tuple, dict]] = get_or_create_global_value('__on_program_exit_listeners__', list)  # type: ignore
+_on_program_exit_listeners: list[tuple[Callable, tuple, dict]] = []  # type: ignore
 
 @overload
 def add_on_program_exit_listener(func: Callable[_P, Any], *args: _P.args, **kwargs: _P.kwargs):...

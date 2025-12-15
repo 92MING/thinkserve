@@ -386,39 +386,3 @@ __all__ = [
     'async_run',
     'wait_coroutine',
 ]
-
-
-
-if __name__ == '__main__':
-    def test_run_any_func():
-        async def f():
-            for i in range(3):
-                await asyncio.sleep(0.25)
-                print('f', i)
-            return 'f exit'
-        
-        async def g():
-            print('g')
-            await asyncio.sleep(0.5)
-            r = run_any_func(f)
-            print('f return:', r)
-            return 'g exit'
-        
-        def sync_f():
-            r = run_any_func(g)
-            print('g return:', r)
-        
-        sync_f()
-        
-        class CustomError(Exception):...
-    
-        async def raise_err_test():
-            await asyncio.sleep(0.1)
-            raise CustomError('Test error')
-
-        try:
-            run_any_func(raise_err_test)    # type: ignore
-        except CustomError as e:
-            print('Caught exception as expected:', e)
-    
-    test_run_any_func()

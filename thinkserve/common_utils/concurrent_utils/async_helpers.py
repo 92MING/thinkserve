@@ -359,6 +359,7 @@ async def get_async_generator(
     else:
         for item in gen:
             yield item
+            await asyncio.sleep(0)  # to let event loop switch
 
 async def async_enumerate(gen: _GenerableT[_R], start: int = 0) -> AsyncGenerator[tuple[int, _R], None]:
     '''

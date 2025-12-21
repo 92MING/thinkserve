@@ -276,15 +276,17 @@ def _tidy_type(t, arg_matches: dict | None = None, _rec=False):
             if t_origin in (Final, ClassVar):
                 return (t_origin[t_args[0]],)   # type: ignore
             return (t_origin[*t_args],)  # type: ignore
-        return (t_origin,)  # type: ignore
-    
+        return (t_origin,)  # type: ignore    
     return (t,)
-
 
 def _is_protocol_type(t):
     if isinstance(t, str):
         return False
-    return _save_issubclass(t, Protocol)
+    if (mro := getattr(t, "__mro__", None)) is not None:
+        for b in mro:
+            if b is Protocol:
+                return True
+    return False
 
 def _check_qualname_eq_without_main(a: str, b: str):
     if (not a.startswith('__main__') and not b.startswith('__main__')) or \
@@ -602,6 +604,8 @@ def check_value_is(value: Any, types: str | Sequence[type | str] | UnionType | T
 @overload
 def check_value_is(value: Any, types: Any) -> bool: ...
 
+_MAX_CONSECUTIVE_CHECK_LEN = 5
+
 @no_type_check
 def check_value_is(value: Any, types):
     """
@@ -667,40 +671,54 @@ def check_value_is(value: Any, types):
                 if len(args) == 0:  # no args, e.g. check_value_is([1,2], list)
                     return _save_isinstance(value, origin)
                 else:
-                    return _save_isinstance(value, origin) and all(
-                        check_value_is(v, args[0]) for v in value
-                    )
-            else:
+                    if _save_isinstance(value, origin):
+                        for i, v in enumerate(value):
+                            if not check_value_is(v, args[0]):
+                                return False
+                            if i + 1 >= _MAX_CONSECUTIVE_CHECK_LEN:
+                                break
+                        return True
+                    return False
+            else:   # tuple case
                 args = get_args(types)
                 if len(args) == 0:
                     return _save_isinstance(value, origin)
                 elif len(args) == 2 and args[-1] == Ellipsis:
-                    return _save_isinstance(value, origin) and all(
-                        check_value_is(v, args[0]) for v in value
-                    )
+                    if _save_isinstance(value, origin):
+                        for i, v in enumerate(value):
+                            if not check_value_is(v, args[0]):
+                                return False
+                            if i + 1 >= _MAX_CONSECUTIVE_CHECK_LEN:
+                                break
+                        return True
+                    return False
                 else:
-                    return (
-                        _save_isinstance(value, origin)
-                        and len(value) == len(get_args(types))
-                        and all(
-                            check_value_is(v, t) for v, t in zip(value, get_args(types))
-                        )
-                    )  # type: ignore
-
+                    if _save_isinstance(value, origin) and len(value) == len(args):
+                        for i, (v, t) in enumerate(zip(value, args)):
+                            if not check_value_is(v, t):
+                                return False
+                            if i + 1 >= _MAX_CONSECUTIVE_CHECK_LEN:
+                                break
+                        return True
+                    return False
+                        
         # dict
         elif _save_issubclass(origin, Mapping):
             mapping_args = get_args(types)
             if not (len(mapping_args) == 2 and origin in (dict, ABCMapping, ABCMutableMapping)):
                 return _save_isinstance(value, origin)
             else:
-                return (
-                    _save_isinstance(value, origin)
-                    and all(
-                        check_value_is(v, get_args(types)[1]) for v in value.values()
-                    )
-                    and all(check_value_is(k, get_args(types)[0]) for k in value.keys())
-                )
-
+                if _save_isinstance(value, origin):
+                    for i, (k, v) in enumerate(value.items()):
+                        if not check_value_is(k, mapping_args[0]):
+                            return False
+                        if not check_value_is(v, mapping_args[1]):
+                            return False
+                        if i + 1 >= _MAX_CONSECUTIVE_CHECK_LEN:
+                            break
+                    return True
+                return False
+                
         # check Callable
         elif _save_issubclass(origin, Callable):
             if not callable(value):

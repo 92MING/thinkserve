@@ -1,5 +1,23 @@
-from pydantic import BaseModel, Field
+import random
+
 from typing import Literal
+from functools import cache
+from pydantic import BaseModel, Field, model_validator
+
+
+def _simplify_name(name: str) -> str:
+    return name.lower().replace(' ', '').replace('_', '').replace('-', '').strip()
+
+def _random_id(k=8) -> str:
+    return ''.join(random.choices('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', k=k))
+
+@cache
+def _service_configs_field_name_mapper():
+    mapper = {}
+    for field_name in ServiceConfigs.model_fields:
+        simple_name = _simplify_name(field_name)
+        mapper[simple_name] = field_name
+    return mapper
 
 class ServiceConfigs(BaseModel):
     '''configurations for the Service class.'''
@@ -8,8 +26,11 @@ class ServiceConfigs(BaseModel):
     name: str
     '''
     The name of this service.
-    NOTE: Services with the same name MUST having same interface.
+    NOTE: Services with the same name MUST having same input/output in same endpoint.
+        But it is allowed to have fewer/more endpoints than others.
     '''
+    id: str
+    '''a unique identifier for this service registration. If not given, it will be `{name}-{random id}``.'''
     category: str|None = None
     '''The category of this service. This will gives affects on routing.'''
     tags: list[str] = Field(default_factory=list)
@@ -105,5 +126,34 @@ class ServiceConfigs(BaseModel):
     This will set the `CUDA_VISIBLE_DEVICES`/`HIP_VISIBLE_DEVICES` environment variable for worker processes.
     '''
     # endregion
+    
+    @classmethod
+    def TidyConfigFieldName(cls, name: str) -> str|None:
+        '''Get the actual field name from a simplified name.'''
+        simple_name = _simplify_name(name)
+        mapper = _service_configs_field_name_mapper()
+        return mapper.get(simple_name, None)
+    
+    @model_validator(mode='before')
+    @classmethod
+    def _PreValidator(cls, data):
+        if isinstance(data, dict):
+            mapper = _service_configs_field_name_mapper()
+            new_data = {}
+            for key, value in data.items():
+                simple_key = _simplify_name(key)
+                if simple_key in mapper:
+                    new_key = mapper[simple_key]
+                    new_data[new_key] = value
+                else:
+                    new_data[key] = value
+            if 'id' not in new_data or not new_data['id']:
+                name = new_data.get('name', None)
+                if not name:
+                    raise ValueError('No service name given')
+                new_data['id'] = f"{name}-{_random_id()}"
+            return new_data
+        return data
+    
     
 __all__ = ["ServiceConfigs"]

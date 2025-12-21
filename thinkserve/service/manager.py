@@ -1,72 +1,70 @@
 import time
 import asyncio
 
-from dataclasses import dataclass, field
 from pydantic import BaseModel
 from typing import TYPE_CHECKING
 from functools import partial
+from multiprocessing import Process
 
 from .configs import ServiceConfigs
 from .register import EndpointInfo
-from .comm import MessageQueue
+from .comm import EventSocketServer, find_available_port
+
+from ..common_utils.debug_utils import Logger, get_logger
 
 if TYPE_CHECKING:
-    from .service import Service
+    from .service import ServiceWorker
 
-class RuntimeInfo(BaseModel):
-    ...
+class ServiceStat(BaseModel):
+    '''runtime statistics of a service.'''
+    total_requests: int = 0
+    '''Total number of requests handled by this service.'''
+    total_errors: int = 0
+    '''Total number of errors occurred in this service.'''
+    average_response_time_secs: float = 0.0
+    '''Average response time (in seconds) of this service.'''
 
-@dataclass
-class ServiceWorkerProxy:
+class ServiceManager:
     
-    input_message_pool: MessageQueue = field(default_factory=partial(MessageQueue, mode='send'))
-    output_message_pool: MessageQueue = field(default_factory=partial(MessageQueue, mode='receive'))
-
-
-class ServerManager:
-    
-    _service_type: type["Service"]
+    _service_type: type["ServiceWorker"]
     _configs: ServiceConfigs
-    _runtime_info: RuntimeInfo
-    _endpoints: dict[str, EndpointInfo]
-    
-    workers: dict[int, ServiceWorkerProxy]
-    '''{worker_id: ServiceWorkerProxy} mapping of all worker proxies.'''
+    _stat: ServiceStat
+    _server: EventSocketServer
     
     def __init__(
         self, 
         configs: ServiceConfigs, 
-        service: type["Service"],
+        service: type["ServiceWorker"],
     ) -> None:
         self._configs = configs
         self._service_type = service
-        self._endpoints = self._generate_endpoints(configs)
-        self._runtime_info = RuntimeInfo()
-        self._grpc_server = None
-        self._grpc_service = None
-    
+        self._stat = ServiceStat()
+        self._server = EventSocketServer(
+            host='localhost',
+            port=find_available_port(),
+            name=f'manager-{configs.id}',
+        )
+
+    @property
+    def logger(self)->Logger:
+        if not (logger:=getattr(self, '_logger', None)):
+            logger = self._logger = get_logger(self._configs.id)
+        return logger
+
     # region shared methods
     def get_configs(self) -> ServiceConfigs:
         return self._configs
     
-    def get_runtime_info(self) -> RuntimeInfo:
-        return self._runtime_info
-    
-    def get_endpoints(self) -> dict[str, EndpointInfo]:
-        return self._endpoints
+    def get_runtime_info(self) -> ServiceStat:
+        return self._stat
     # endregion
     
-    def _generate_endpoints(self, config: ServiceConfigs)-> dict[str, EndpointInfo]:
-        ...
-    
-    def _generate_service(self):
-        if self._grpc_service is not None:
-            return self._grpc_service
+    def start(self):
         ...
     
     
     
 __all__ = [
-    "ServerManager",
-    "RuntimeInfo",
+    "ServiceManager",
+    "ServiceStat",
 ]

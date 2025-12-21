@@ -227,23 +227,25 @@ class FileCrossProcessLock(_FileCrossProcessLockBase):
                 time.sleep(t)
                 t = min(t * 2, _MAX_BACKOFF)
     
-    def release(self) -> bool:
-        if self.fd is None:
+    def release(self, force:bool=False) -> bool:
+        if self.fd is None and not force:
             return False
         
         success = True
         if os.name == 'nt':  # Windows
-            self.fd.close()
+            if self.fd is not None:
+                self.fd.close()
             try:
                 os.unlink(self.lock_file)
             except Exception:
                 success = False
         else:  # Unix-like
-            try:
-                fcntl.flock(self.fd, fcntl.LOCK_UN)
-            except Exception:
-                success = False
-            self.fd.close()
+            if self.fd is not None:
+                try:
+                    fcntl.flock(self.fd, fcntl.LOCK_UN)
+                except Exception:
+                    success = False
+                self.fd.close()
             try:
                 os.unlink(self.lock_file)
             except Exception:

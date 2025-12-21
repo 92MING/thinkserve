@@ -1,137 +1,149 @@
-import uuid
+import time
 
-from threading import Thread
-from dataclasses import dataclass
-from multiprocessing.queues import Queue
-from typing import TYPE_CHECKING, Callable, TypedDict, TypeVar, ParamSpec
+from dataclasses import dataclass, field
+from typing import (TYPE_CHECKING, Callable, TypeVar, Any, Awaitable)
 
-from .manager import ServerManager, _ReceivedEventOutputPool
+from .manager import ServiceManager
+from .comm import EventSocketClient
+
+from ..common_utils.type_utils import is_empty_method
+from ..common_utils.concurrent_utils import wait_coroutine
+from ..common_utils.debug_utils import get_logger, Logger
 
 if TYPE_CHECKING:
     from .register import EndpointInfo
     from .configs import ServiceConfigs
 
-_P = ParamSpec('_P')
-_R = TypeVar('_R')
 
 @dataclass(frozen=True)
-class ServiceInfo:
+class ServiceWorkerInfo:
+    '''extra information for service worker instance.'''
+    worker_name: str
+    '''A unique name for this worker instance, usually `{service_id}-worker{worker_id}``.'''
     worker_id: int
     '''[0, worker_count -1], the unique id of this worker.'''
-    
+    start_time: float = field(default_factory=lambda: time.time())
+    '''The timestamp when this worker started.'''
+    manager_server_port: int|None = None
+    '''The port number of the manager process. Can be None in `identifier` mode.'''
+    manager_server_identifier: str|None = None
+    '''The identifier of the manager process. Can be None in `port` mode.'''
     
 @dataclass
-class _Endpoint:
+class Endpoint:
     func: Callable
     info: 'EndpointInfo'
 
-    def update(self, config: "ServiceConfigs"):
-        self.info._update(config)
+    def update(self, config: "ServiceConfigs|None"=None, **extra_fields) -> None:
+        if config:
+            self.info.update_from_config(config)
+        if extra_fields:
+            self.info.update_from_kwargs(**extra_fields)
 
-class _EventInput(TypedDict):
-    id: str
-    event: str
-    args: tuple
-    kwargs: dict
-    
-class _EventOutput(TypedDict):
-    id: str
-    result: object|None
-    exception: Exception|None
-    
-def _random_event_id() -> str:
-    return str(uuid.uuid4())
+_F = TypeVar('_F', bound=Callable[..., Any])
+def _event(func: _F) -> _F:
+    setattr(func, '_is_event', True)
+    return func
 
-class Service:
+class ServiceWorker:
     
-    info: ServiceInfo
+    info: ServiceWorkerInfo
     '''Information about this service instance. This field is immutable.'''
-    manager: ServerManager
+    manager: ServiceManager
     '''
     The manager that manages this service instance.
     NOTE: this is actually a multiprocess-proxy. Only certain attributes & methods are accessible.
     '''
-    endpoints: dict[str, _Endpoint]
+    endpoints: dict[str, Endpoint]
     '''{endpoint_name: _Endpoint} mapping of all endpoints registered in this service.'''
-    input_queue: Queue[_EventInput]
-    '''Queue for accepting events from manager.'''
-    output_queue: Queue[_EventOutput]
-    '''Queue for sending event results back to manager.'''
-    event_listener_thread: Thread
-    '''Thread for listening to events from input_queue.'''
+    event_client: EventSocketClient
+    '''The event socket client for this service worker.'''
+    
+    _name: str
+    '''A unique name for this service worker. Not changeable.'''
     
     def __init__(
         self, 
-        info: ServiceInfo, 
-        manager: ServerManager,
-        input_queue: Queue,
-        output_queue: Queue,
+        info: ServiceWorkerInfo, 
+        manager: ServiceManager,
     ) -> None:
         self.info = info
         self.manager = manager
-        self.input_queue = input_queue
-        self.output_queue = output_queue
         configs = self.manager.get_configs()
+        self._name = info.worker_name   # for convenience
         self.endpoints = {}
-        
-        self.event_listener_thread = Thread(target=self._queue_listener)
-        self.event_listener_thread.daemon = True
-        self.event_listener_thread.start()
-        
+
         # init endpoints
         for attr_name in dir(self):
-            if hasattr(Service, attr_name):
+            if hasattr(ServiceWorker, attr_name):
                 continue    # skip inherited attributes
             attr = getattr(self, attr_name)
             if hasattr(attr, '_thinkserve_endpoint_info'):
                 endpoint_info: "EndpointInfo" = getattr(attr, '_thinkserve_endpoint_info')
-                endpoint_info._update(configs)
-                self.endpoints[attr_name] = _Endpoint(
+                endpoint_info.update_from_config(configs)
+                self.endpoints[attr_name] = Endpoint(
                     func=attr,
                     info=endpoint_info
                 )
-    
-    def __init_subclass__(cls):
-        pass
-    
-    # region events
-    @classmethod
-    async def _Invoke(
-        cls, 
-        func: Callable[_P, _R], 
-        input_queue: Queue[_EventInput],
-        output_pool: _ReceivedEventOutputPool,
-        *args: _P.args, 
-        **kwargs: _P.kwargs
-    ) -> _R:
-        '''
-        Invoke an endpoint function in the service instance.
-        This method will be called by manager. If any error occurs, it will also be raised.
-        '''
-        id = _random_event_id()
-        event_input: _EventInput = {
-            'id': id,
-            'event': func.__name__,
-            'args': args,
-            'kwargs': kwargs,
-        }
-        input_queue.put(event_input)
-        r = await output_pool.get(id)   # will raise TimeoutError if timeout
-        if r['exception'] is not None:
-            raise r['exception']
-        return r['result']  # type: ignore
-    
-    def _queue_listener(self):
-        ...
-    
-    def _stop(self):
-        ...
         
-    def _handle_task(self, ):
-        ...
+        if not is_empty_method(self.initialization):
+            r = self.initialization()
+            if isinstance(r, Awaitable):
+                wait_coroutine(r)
+        
+        # register communication events
+        if info.manager_server_port is not None:
+            self.event_client = EventSocketClient(host='localhost', port=info.manager_server_port, name=self.name)
+        else:
+            self.event_client = EventSocketClient(host='localhost', identifier=info.manager_server_identifier, name=self.name)    # type: ignore
+        for attr in dir(self.__class__):
+            if attr.startswith('__'):
+                continue
+            method = getattr(self.__class__, attr)
+            if hasattr(method, '_is_event'):
+                event_name = method.__name__.strip('_')
+                self.event_client.event(name=event_name)(getattr(self, method.__name__))
+        self.event_client.start()
+        
+    # region hook methods
+    def initialization(self):
+        '''
+        A hook method called right after the worker is created.
+        You can define any initialization logic here. If not overridden, this method does nothing.
+        NOTE: 
+         - this method can be async or sync.
+         - During this method, `event_client` has not started yet, so you CANNOT use event communication here.
+        '''
     # endregion
     
+    @property
+    def name(self):
+        return self._name
+    
+    @property
+    def logger(self)->Logger:
+        if not (logger:=getattr(self, '_logger', None)):
+            logger = self._logger = get_logger(self.name)
+        return logger
+    
+    @_event
+    def _update_endpoint(
+        self,
+        endpoint: str,
+        params: dict[str, Any]
+    ):
+        if not (endpoint_info := self.endpoints.get(endpoint, None)):
+            self.logger.warning(f'No such endpoint "{endpoint}" to update.')
+        else:
+            endpoint_info.info.update_from_kwargs(**params)
+            
+    @_event
+    def _call_endpoint(
+        self,
+        endpoint: str,
+    ):
+        ...
     
     
     
-__all__ = ['Service', 'ServiceInfo']
+__all__ = ['ServiceWorker', 'ServiceWorkerInfo']

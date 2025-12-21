@@ -2,17 +2,51 @@ import inspect
 
 from math import ceil
 from dataclasses import dataclass
+from functools import cache, partial
 from typing import (TYPE_CHECKING, TypeAlias, Callable, AsyncIterator, Awaitable, TypeVar,
                     Sequence, TypedDict, get_origin, get_args, AsyncIterable, AsyncGenerator)
 from typing_extensions import overload, TypeAliasType, Unpack
 
+from ..common_utils.type_utils import is_serializable, deserialize, check_value_is
+from ..common_utils.debug_utils import get_logger
+
 if TYPE_CHECKING:
     from .message import Message, StreamMessage, ServeContext
-    from .service import Service
+    from .service import ServiceWorker
     from .configs import ServiceConfigs
 
 _empty = inspect.Parameter.empty
+_logger = get_logger(__name__)
 
+def _simplify_name(name: str) -> str:
+    return name.lower().replace(' ', '').replace('_', '').replace('-', '').strip()
+
+@cache
+def _endpoint_info_field_name_mapper():
+    mapper = {}
+    for field_name in EndpointInfo.__dataclass_fields__:
+        simple_name = _simplify_name(field_name)
+        mapper[simple_name] = field_name
+    return mapper
+
+@cache
+def _endpoint_info_field_annos():
+    annos = {}
+    for field_name, field in EndpointInfo.__dataclass_fields__.items():
+        annos[field_name] = field.type
+    return annos
+
+@cache
+def _endpoint_info_field_serializer(field: str):
+    if not (field := EndpointInfo.TidyFieldName(field)):    # type: ignore
+        return None
+    anno = _endpoint_info_field_annos().get(field, None)
+    if not anno or anno == inspect.Parameter.empty:
+        return None
+    if not is_serializable(anno):
+        return None
+    return partial(deserialize, target_type=anno)
+    
 @dataclass
 class EndpointInfo:
     
@@ -72,7 +106,14 @@ class EndpointInfo:
     '''The timeout in seconds for handling a batch request. If None, no timeout.
     If not given, use handle_timeout_secs * batch_size'''
     
-    def _update(self, service_config: "ServiceConfigs"):
+    @classmethod
+    def TidyFieldName(cls, name: str) -> str|None:
+        '''Get the actual field name from a simplified name.'''
+        simple_name = _simplify_name(name)
+        mapper = _endpoint_info_field_name_mapper()
+        return mapper.get(simple_name, None)
+    
+    def update_from_config(self, service_config: "ServiceConfigs"):
         '''update the endpoint info based on the service config.'''
         def _get_default(attr_name: str, fallback):
             return getattr(service_config, f'default_{attr_name}', fallback)
@@ -104,9 +145,33 @@ class EndpointInfo:
         if self.worker_max_task_count is not None and self.batch_size > self.worker_max_task_count:
             self.batch_size = self.worker_max_task_count
     
+    def update_from_kwargs(self, **extra_fields) -> None:
+        tidied_fields = {}
+        for k, v in extra_fields.items():
+            if (tidied_k:=EndpointInfo.TidyFieldName(k)) is not None:
+                tidied_fields[tidied_k] = v
+        annos = _endpoint_info_field_annos()
+        for k, v in tidied_fields.items():
+            field_anno = annos[k]
+            if not check_value_is(v, field_anno):
+                if isinstance(v, str):
+                    if serializer:=_endpoint_info_field_serializer(k):
+                        try:
+                            v = serializer(v)
+                        except Exception as e:
+                            _logger.warning(f"Cannot update EndpointInfo field '{k}': failed to deserialize value '{v}' to type `{field_anno}`. Skipped. Error: {e}")
+                            continue
+                    else:
+                        _logger.warning(f"Cannot update EndpointInfo field '{k}': value '{v}' is not of type `{field_anno}`. Skipped.")
+                        continue
+                else:
+                    _logger.warning(f"Cannot update EndpointInfo field '{k}': value '{v}' is not of type `{field_anno}`. Skipped.")
+                    continue
+            setattr(self, k, v)
+    
 _T = TypeVar('_T')
 _R = TypeVar('_R')
-_ContextFunc = TypeAliasType('_ContextFunc', Callable[['Service', _T], _R]|Callable[['Service', _T, 'ServeContext'], _R], type_params=(_T, _R)) 
+_ContextFunc = TypeAliasType('_ContextFunc', Callable[['ServiceWorker', _T], _R]|Callable[['ServiceWorker', _T, 'ServeContext'], _R], type_params=(_T, _R)) 
 
 ServiceHandler: TypeAlias = _ContextFunc[Message, Message]
 ServiceAsyncHandler: TypeAlias = _ContextFunc[Message, Awaitable[Message]]

@@ -17,3 +17,7 @@ annotated-types>=0.7.0
 typeguard
 orjson
 attrs
+reactpy
+fastapi
+javascripthon
+httpx

@@ -18,6 +18,7 @@ import inspect
 import asyncio
 import logging
 import requests
+import tempfile
 
 if __name__.endswith('main__'): # for debugging
     logging.basicConfig(level=5, format='(%(process)d)|%(name)s|[%(levelname)s] %(asctime)s: %(message)s')
@@ -308,9 +309,9 @@ class EventData(SocketBaseData):
             _logger.warning(f'Received unknown event: {self.event} from client `{from_client_id}`')
             return
         # trigger event, and send result back
-        params = event.pack_params(self.data)
         try:
-            r = await event.invoke(params)
+            params = event.pack_params(self.data)
+            r = await event.invoke(*params.args, **params.kwargs)
         except BaseException as e:
             data = f'Error during event `{self.event}` handling. {type(e).__name__}: {e}.'
             data = data.encode('utf-8')
@@ -1027,19 +1028,21 @@ class EventHandlerInfo:
         self.func_params = self.func_sig.parameters # type: ignore
         self.func_return_type = self.func_sig.return_annotation
     
-    def pack_params(self, params: dict[str, Any])->dict[str, Any]:
+    def pack_params(self, params: dict[str, Any])->inspect.BoundArguments:
         '''
         Pack and validate parameters for invoking the event handler.
         Raises `TypeError` if parameters do not match.
         '''
-        bound = self.func_sig.bind(**params).arguments
+        bound = self.func_sig.bind(**params)
         for k, p in self.func_params.items():
-            try:
-                val = bound[k]
-            except KeyError:
-                raise TypeError(f'Missing required parameter: {k}')
-            if p.annotation != inspect.Parameter.empty:
-                bound[k] = _convert_val(val, p.annotation)
+            if p.annotation not in (inspect.Parameter.empty, Any):
+                if p.kind == inspect.Parameter.VAR_POSITIONAL:
+                    bound.arguments[k] = tuple(_convert_val(v, p.annotation) for v in bound.arguments[k])
+                elif p.kind == inspect.Parameter.VAR_KEYWORD:
+                    for vk in tuple(bound.arguments[k]):
+                        bound.arguments[k][vk] = _convert_val(bound.arguments[k][vk], p.annotation)
+                else:
+                    bound.arguments[k] = _convert_val(bound.arguments[k], p.annotation)
         return bound
         
     async def invoke(self, params: dict[str, Any]):
@@ -1808,14 +1811,6 @@ class EventSocketClient(EventClientBase, _SocketBaseMixin):
     
     # region properties
     @property
-    def port(self) -> int|None:
-        return self._port
-    
-    @property
-    def identifier(self) -> str|None:
-        return self._identifier
-    
-    @property
     def connected(self) -> bool:
         '''whether the client is connected to the server.'''
         if len(self._clients) > 0:
@@ -1851,11 +1846,7 @@ class EventSocketServer(EventServerBase, _SocketBaseMixin):
     
     _server: asyncio.AbstractServer|None = None
     '''server instance, will be created in `internal_start()`'''
-    _port: int|None = None
-    '''port to listen on.'''
-    _identifier: str|None = None
-    '''identifier for AF_UNIX socket.'''
-    
+
     @overload
     def __init__(self, /, port: int, **kwargs: Unpack[_ServerInitCommonParams]): 
         '''connect to or create a local socket server on the given port.'''
@@ -1867,15 +1858,20 @@ class EventSocketServer(EventServerBase, _SocketBaseMixin):
     def __init__(self, /, port: int|None=None, identifier: str|None=None, **kwargs: Unpack[_ServerInitCommonParams]): # type: ignore
         super().__init__(**kwargs)
         self._init_socket_base(port, identifier)
-    
+
     @override
     async def start_server(self, on_channel_created: Callable[[ChannelReader, ChannelWriter], Awaitable[Any]]):
         async def on_channel_created_wrapper(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
             channel_reader = AsyncioChannelReader(reader)
             channel_writer = AsyncioChannelWriter(writer)
             await on_channel_created(channel_reader, channel_writer)
-            
-        self._server = await asyncio.start_server(on_channel_created_wrapper, self._host, self._port)
+        if self._identifier is not None:
+            if os.name == 'nt':
+                raise NotImplementedError('AF_UNIX sockets are not supported on Windows yet.')
+            socket_path = tempfile.gettempdir() + os.sep + self._identifier
+            self._server = await asyncio.start_unix_server(on_channel_created_wrapper, path=socket_path)
+        else:
+            self._server = await asyncio.start_server(on_channel_created_wrapper, self._host, self._port)
         async with self._server:
             await self._server.serve_forever()
         self._server = None

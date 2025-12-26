@@ -2,6 +2,17 @@ import os
 
 from pathlib import Path
 
+THINKSERVE_HOST = os.environ.get('THINKSERVE_HOST', 'localhost')
+try:
+    THINKSERVE_PORT = int(os.environ.get('THINKSERVE_PORT', '9394').strip())
+except ValueError:
+    THINKSERVE_PORT = 9394
+THINKSERVE_AUTH = os.environ.get('THINKSERVE_AUTH', None)
+
+THINKSERVE_LOG_LEVEL = os.environ.get('THINKSERVE_LOG_LEVEL', 'INFO').upper()
+if THINKSERVE_LOG_LEVEL not in ('VERBOSE', 'DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'):
+    THINKSERVE_LOG_LEVEL = 'INFO'
+
 def _tidy_dir(p: Path) -> Path:
     p = p.expanduser().resolve()
     if not p.exists():
@@ -27,7 +38,13 @@ else:
 for p in [STORAGE_DIR, TEMP_PATH, PROTO_PATH]:
     _tidy_dir(p)
 
+
 __all__ = [
+    "THINKSERVE_HOST",
+    "THINKSERVE_PORT",
+    "THINKSERVE_AUTH", 
+    "THINKSERVE_LOG_LEVEL",
+            
     "STORAGE_DIR",
     "TEMP_PATH",
     "PROTO_PATH",

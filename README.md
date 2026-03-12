@@ -15,12 +15,15 @@ ThinkServe是基于FastAPI/Pydantic的一个类似k8s/grpc的微服务框架, �
 graph TD
     Client[客户端] --http / websocket / gRPC--> Server[FastAPI/gRPC]
     Server <--获取/更新服务情况--> Storage[共享储存]
-    S1[Service X Manager]
-    Server --选择服务---> S1
-    S1 --> W11[Worker X.1]
-    S1 --> W12[Worker X.2]
+    SM[Service X Manager]
+    SC[Service Category Manager]
+    Server --选择服务类别---> SC
+    SC <--获取/更新服务情况--> Storage
+    SC --选择服务实例---> SM
+    SM --> W11[Worker X.1]
+    SM --> W12[Worker X.2]
 ```
-其中共享储存是透过一个单独的Process(Python multiprocessing.Manager)来实现的.
+其中共享储存是透过一个单独的Process(默认Python multiprocessing.Manager)来实现的, 之后也可以替换成redis/mongodb等外部数据库.
 
 # 项目文件结构
 - thinkserve:
